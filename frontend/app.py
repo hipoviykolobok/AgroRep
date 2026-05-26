@@ -222,6 +222,23 @@ VALUE_LABELS = {
         False: "нет",
     },
 }
+CREATION_FLOW_STEPS = [
+    "Набор данных",
+    "Версия",
+    "Метаданные",
+    "Файл",
+    "Импорт наблюдений",
+    "Проверка результата",
+]
+CREATION_FLOW_KEYS = [
+    "creation_step",
+    "creation_dataset_id",
+    "creation_dataset_title",
+    "creation_version_id",
+    "creation_version_label",
+    "creation_file_id",
+    "creation_flow_message",
+]
 
 
 st.set_page_config(page_title="Репозиторий агроданных MVP", layout="wide")
@@ -427,10 +444,17 @@ def option_map(items: list[dict[str, Any]], id_key: str, label_key: str) -> dict
     return {item[label_key]: item[id_key] for item in items}
 
 
-def select_reference(label: str, items: list[dict[str, Any]], id_key: str, label_key: str, include_all: bool = False):
+def select_reference(
+    label: str,
+    items: list[dict[str, Any]],
+    id_key: str,
+    label_key: str,
+    include_all: bool = False,
+    key: str | None = None,
+):
     labels = ["Все"] if include_all else []
     labels += [item[label_key] for item in items]
-    selected = st.selectbox(label, labels)
+    selected = st.selectbox(label, labels, key=key)
     if selected == "Все":
         return None
     return option_map(items, id_key, label_key)[selected]
@@ -454,6 +478,54 @@ def current_versions_from_catalog(datasets: list[dict[str, Any]]) -> dict[str, i
         if item.get("current_version_id")
     ]
     return make_options(version_items, "label", "version_id")
+
+
+def option_index_by_value(options: dict[str, int], value: int | None) -> int:
+    values = list(options.values())
+    if value in values:
+        return values.index(value)
+    return 0
+
+
+def go_to_page(page: str, **state: Any) -> None:
+    for key, value in state.items():
+        st.session_state[key] = value
+    st.session_state.page = page
+    st.rerun()
+
+
+def next_page_button(label: str, page: str, key: str, **state: Any) -> None:
+    if st.button(label, key=key):
+        go_to_page(page, **state)
+
+
+def clear_creation_flow() -> None:
+    for key in CREATION_FLOW_KEYS:
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def advance_creation_flow(step: int, message: str) -> None:
+    st.session_state.creation_step = step
+    st.session_state.creation_flow_message = message
+    st.rerun()
+
+
+def render_creation_progress() -> None:
+    current_step = int(st.session_state.get("creation_step", 0))
+    labels = []
+    for index, title in enumerate(CREATION_FLOW_STEPS):
+        if index < current_step:
+            labels.append(f"✓ {title}")
+        elif index == current_step:
+            labels.append(f"→ {title}")
+        else:
+            labels.append(title)
+    st.caption(" / ".join(labels))
+
+    message = st.session_state.pop("creation_flow_message", None)
+    if message:
+        st.success(message)
 
 
 def display_validation_result(validation: dict[str, Any], title: str = "Результат проверки") -> None:
@@ -638,30 +710,181 @@ def catalog_page(refs: dict[str, Any]):
 def create_dataset_page(refs: dict[str, Any]):
     page_header(
         "Создание набора данных",
-        "Создается постоянная карточка набора. Файлы, статус и наблюдения появятся позже на уровне версии.",
+        "Пошаговое создание полного набора: карточка, версия, метаданные, файл, импорт наблюдений и проверка результата.",
     )
-    with st.form("create_dataset"):
-        title = st.text_input("Название")
-        description = st.text_area("Описание")
-        category_id = select_reference("Категория", refs["categories"], "category_id", "category_name")
-        submitted = st.form_submit_button("Создать набор")
-    if submitted:
-        title = title.strip()
-        description = description.strip() or None
-        if not title:
-            st.warning("Укажите название набора данных.")
-            return
-        try:
-            payload = {
-                "title": title,
-                "description": description,
-                "category_id": category_id,
-                "created_by": st.session_state.user["user_id"],
+    st.session_state.setdefault("creation_step", 0)
+    render_creation_progress()
+
+    dataset_id = st.session_state.get("creation_dataset_id")
+    version_id = st.session_state.get("creation_version_id")
+    file_id = st.session_state.get("creation_file_id")
+    step = int(st.session_state.get("creation_step", 0))
+
+    control_left, control_right = st.columns([1, 3])
+    with control_left:
+        if st.button("Начать заново", key="restart_creation_flow"):
+            clear_creation_flow()
+    with control_right:
+        if dataset_id:
+            st.caption(f"Текущий сценарий: {st.session_state.get('creation_dataset_title', 'набор данных')}")
+
+    if step == 0:
+        section_title("Шаг 1. Набор данных")
+        with st.form("create_dataset_wizard"):
+            title = st.text_input("Название")
+            description = st.text_area("Описание")
+            category_id = select_reference(
+                "Категория",
+                refs["categories"],
+                "category_id",
+                "category_name",
+                key="wizard_dataset_category",
+            )
+            submitted = st.form_submit_button("Создать набор и перейти к версии")
+        if submitted:
+            title = title.strip()
+            description = description.strip() or None
+            if not title:
+                st.warning("Укажите название набора данных.")
+                return
+            try:
+                payload = {
+                    "title": title,
+                    "description": description,
+                    "category_id": category_id,
+                    "created_by": st.session_state.user["user_id"],
+                }
+                result = api_post("/datasets", json=payload)
+                st.session_state.creation_dataset_id = result["dataset_id"]
+                st.session_state.creation_dataset_title = result["title"]
+                st.session_state.selected_dataset_id = result["dataset_id"]
+                advance_creation_flow(1, f"Набор создан: {result['title']}.")
+            except Exception as exc:
+                st.error(f"Не удалось создать набор: {exc}")
+
+    elif step == 1:
+        if not dataset_id:
+            st.warning("Сначала создайте набор данных.")
+            st.session_state.creation_step = 0
+            st.rerun()
+        section_title("Шаг 2. Версия")
+        st.write("Версия будет создана для выбранного набора данных.")
+        with st.form("create_version_wizard"):
+            version_number = st.text_input("Номер версии", value="1.0")
+            source_id = select_reference("Источник", refs["sources"], "source_id", "source_name", key="wizard_version_source")
+            access_map = {
+                format_value("access_level", item["access_level_name"]): item["access_level_id"]
+                for item in refs["access_levels"]
             }
-            result = api_post("/datasets", json=payload)
-            st.success(f"Набор создан: {result['title']}")
-        except Exception as exc:
-            st.error(f"Не удалось создать набор: {exc}")
+            status_map = {
+                format_value("status", item["status_name"]): item["status_id"]
+                for item in refs["statuses"]
+            }
+            access_level_id = access_map[st.selectbox("Уровень доступа", list(access_map), key="wizard_access_level")]
+            status_id = status_map[st.selectbox("Статус", list(status_map), key="wizard_status")]
+            change_note = st.text_area("Комментарий изменений", value="Первичная версия набора.")
+            submitted = st.form_submit_button("Создать версию и перейти к метаданным")
+        if submitted:
+            try:
+                payload = {
+                    "version_number": version_number,
+                    "status_id": status_id,
+                    "access_level_id": access_level_id,
+                    "source_id": source_id,
+                    "change_note": change_note,
+                }
+                result = api_post(f"/datasets/{dataset_id}/versions", json=payload)
+                st.session_state.creation_version_id = result["version_id"]
+                st.session_state.creation_version_label = f"{st.session_state.creation_dataset_title} / версия {result['version_number']}"
+                advance_creation_flow(2, f"Версия создана: {result['version_number']}.")
+            except Exception as exc:
+                st.error(f"Не удалось создать версию: {exc}")
+
+    elif step == 2:
+        if not version_id:
+            st.warning("Сначала создайте версию.")
+            st.session_state.creation_step = 1
+            st.rerun()
+        section_title("Шаг 3. Метаданные")
+        with st.form("metadata_wizard"):
+            annotation = st.text_area("Аннотация")
+            methodology = st.text_area("Методика")
+            spatial_coverage = st.text_input("Территориальное покрытие")
+            temporal_coverage = st.text_input("Временной охват")
+            license_id = select_reference("Лицензия", refs["licenses"], "license_id", "license_name", key="wizard_license")
+            quality_note = st.text_area("Заметка о качестве")
+            citation = st.text_area("Цитирование")
+            submitted = st.form_submit_button("Сохранить метаданные и перейти к файлу")
+        if submitted:
+            try:
+                payload = {
+                    "annotation": annotation,
+                    "methodology": methodology,
+                    "temporal_coverage": temporal_coverage,
+                    "spatial_coverage": spatial_coverage,
+                    "license_id": license_id,
+                    "quality_note": quality_note,
+                    "citation": citation,
+                }
+                api_post(f"/versions/{version_id}/metadata", json=payload)
+                advance_creation_flow(3, "Метаданные версии сохранены.")
+            except Exception as exc:
+                st.error(f"Не удалось сохранить метаданные: {exc}")
+
+    elif step == 3:
+        if not version_id:
+            st.warning("Сначала создайте версию.")
+            st.session_state.creation_step = 1
+            st.rerun()
+        section_title("Шаг 4. Файл")
+        uploaded = st.file_uploader("CSV/XLSX файл", type=["csv", "xlsx"], key="wizard_file_upload")
+        if st.button("Загрузить файл и перейти к импорту", key="wizard_upload_file"):
+            if not uploaded:
+                st.warning("Выберите файл для загрузки.")
+                return
+            try:
+                files = {"file": (uploaded.name, uploaded.getvalue(), uploaded.type or "application/octet-stream")}
+                data = {"uploaded_by": str(st.session_state.user["user_id"]), "is_primary": "true"}
+                result = api_post(f"/versions/{version_id}/files", files=files, data=data)
+                st.session_state.creation_file_id = result["file"]["file_id"]
+                st.session_state.last_uploaded_file_id = result["file"]["file_id"]
+                display_validation_result(result["validation"], "Проверка загруженного файла")
+                advance_creation_flow(4, "Файл загружен и проверен.")
+            except Exception as exc:
+                st.error(f"Не удалось загрузить файл: {exc}")
+
+    elif step == 4:
+        if not file_id:
+            st.warning("Сначала загрузите файл.")
+            st.session_state.creation_step = 3
+            st.rerun()
+        section_title("Шаг 5. Импорт наблюдений")
+        st.write("Импорт переносит проверенный файл в аналитический слой observations.")
+        if st.button("Импортировать наблюдения и проверить результат", key="wizard_import_observations"):
+            try:
+                result = api_post(f"/files/{file_id}/import-observations")
+                display_validation_result(result["validation"], "Проверка импорта наблюдений")
+                advance_creation_flow(5, f"Импортировано строк: {result['imported_count']}.")
+            except Exception as exc:
+                st.error(f"Не удалось импортировать наблюдения: {exc}")
+
+    else:
+        if not dataset_id:
+            st.warning("Сначала создайте набор данных.")
+            st.session_state.creation_step = 0
+            st.rerun()
+        section_title("Шаг 6. Проверка результата")
+        detail = api_get(f"/datasets/{dataset_id}")
+        col1, col2, col3 = st.columns(3)
+        current_version = detail.get("current_version")
+        col1.metric("Набор данных", detail["title"])
+        col2.metric("Текущая версия", current_version.get("version_number") if current_version else "-")
+        col3.metric("Наблюдений", detail["observations_count"])
+        action1, action2 = st.columns(2)
+        if action1.button("Открыть карточку набора", key="wizard_open_dataset_card"):
+            go_to_page("Карточка набора данных", selected_dataset_id=dataset_id)
+        if action2.button("Создать еще один набор", key="wizard_create_another_dataset"):
+            clear_creation_flow()
 
 
 def create_version_page(refs: dict[str, Any]):
@@ -674,8 +897,11 @@ def create_version_page(refs: dict[str, Any]):
         st.info("Сначала создайте набор данных.")
         return
     dataset_map = make_options(datasets, "title", "dataset_id")
+    default_dataset_id = st.session_state.get("creation_dataset_id") or st.session_state.get("selected_dataset_id")
+    default_dataset_index = option_index_by_value(dataset_map, default_dataset_id)
     with st.form("create_version"):
-        dataset_id = dataset_map[st.selectbox("Набор данных", list(dataset_map))]
+        dataset_label = st.selectbox("Набор данных", list(dataset_map), index=default_dataset_index)
+        dataset_id = dataset_map[dataset_label]
         version_number = st.text_input("Номер версии", value="1.0")
         source_id = select_reference("Источник", refs["sources"], "source_id", "source_name")
         access_map = {
@@ -700,7 +926,16 @@ def create_version_page(refs: dict[str, Any]):
                 "change_note": change_note,
             }
             result = api_post(f"/datasets/{dataset_id}/versions", json=payload)
+            st.session_state.creation_dataset_id = dataset_id
+            st.session_state.creation_version_id = result["version_id"]
+            st.session_state.creation_version_label = f"{dataset_label} / версия {result['version_number']}"
             st.success(f"Версия создана: {result['version_number']}")
+            next_page_button(
+                "Заполнить метаданные для этой версии",
+                "Метаданные версии",
+                "go_metadata_after_version_create",
+                creation_version_id=result["version_id"],
+            )
         except Exception as exc:
             st.error(f"Не удалось создать версию: {exc}")
 
@@ -715,8 +950,10 @@ def metadata_page(refs: dict[str, Any]):
     if not version_map:
         st.info("Нет версий для заполнения метаданных.")
         return
+    default_version_index = option_index_by_value(version_map, st.session_state.get("creation_version_id"))
     with st.form("metadata"):
-        version_id = version_map[st.selectbox("Версия", list(version_map))]
+        version_label = st.selectbox("Версия", list(version_map), index=default_version_index)
+        version_id = version_map[version_label]
         annotation = st.text_area("Аннотация")
         methodology = st.text_area("Методика")
         spatial_coverage = st.text_input("Территориальное покрытие")
@@ -737,7 +974,15 @@ def metadata_page(refs: dict[str, Any]):
                 "citation": citation,
             }
             result = api_post(f"/versions/{version_id}/metadata", json=payload)
+            st.session_state.creation_version_id = version_id
+            st.session_state.creation_version_label = version_label
             st.success("Метаданные версии сохранены.")
+            next_page_button(
+                "Загрузить файл для этой версии",
+                "Загрузка файла",
+                "go_upload_after_metadata",
+                creation_version_id=version_id,
+            )
         except Exception as exc:
             st.error(f"Не удалось сохранить метаданные: {exc}")
 
@@ -753,7 +998,10 @@ def upload_page():
         st.info("Нет версий для загрузки файла.")
         return
 
-    version_id = version_map[st.selectbox("Версия", list(version_map))]
+    default_version_index = option_index_by_value(version_map, st.session_state.get("creation_version_id"))
+    version_label = st.selectbox("Версия", list(version_map), index=default_version_index)
+    version_id = version_map[version_label]
+    dataset_id = next((item["dataset_id"] for item in datasets if item.get("current_version_id") == version_id), None)
     uploaded = st.file_uploader("CSV/XLSX файл", type=["csv", "xlsx"])
     if st.button("Загрузить и проверить") and uploaded:
         try:
@@ -761,7 +1009,10 @@ def upload_page():
             data = {"uploaded_by": str(st.session_state.user["user_id"]), "is_primary": "true"}
             result = api_post(f"/versions/{version_id}/files", files=files, data=data)
             st.session_state.last_uploaded_file_id = result["file"]["file_id"]
+            st.session_state.creation_version_id = version_id
+            st.session_state.creation_file_id = result["file"]["file_id"]
             display_validation_result(result["validation"], "Проверка загруженного файла")
+            st.info("Теперь можно импортировать наблюдения из загруженного файла.")
         except Exception as exc:
             st.error(f"Не удалось загрузить файл: {exc}")
 
@@ -771,6 +1022,15 @@ def upload_page():
             result = api_post(f"/files/{file_id}/import-observations")
             st.success(f"Импортировано строк: {result['imported_count']}")
             display_validation_result(result["validation"], "Проверка импорта наблюдений")
+            if dataset_id:
+                next_page_button(
+                    "Открыть карточку набора данных",
+                    "Карточка набора данных",
+                    "go_dataset_card_after_import",
+                    selected_dataset_id=dataset_id,
+                    creation_dataset_id=dataset_id,
+                    creation_version_id=version_id,
+                )
         except Exception as exc:
             st.error(f"Не удалось импортировать наблюдения: {exc}")
 
