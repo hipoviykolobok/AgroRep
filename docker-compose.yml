@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: repository_mvp_db
+    environment:
+      POSTGRES_DB: repository_mvp
+      POSTGRES_USER: repository_user
+      POSTGRES_PASSWORD: repository_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repository_user -d repository_mvp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: repository_mvp_backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://repository_user:repository_password@db:5432/repository_mvp
+      STORAGE_DIR: /app/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: repository_mvp_frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8502:8501"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
