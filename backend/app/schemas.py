@@ -172,6 +172,7 @@ class DatasetDetail(BaseModel):
     created_by: int
     created_at: datetime
     updated_at: datetime
+    versions: list[dict[str, Any]]
     current_version: dict[str, Any] | None
     metadata: dict[str, Any] | None
     files: list[dict[str, Any]]

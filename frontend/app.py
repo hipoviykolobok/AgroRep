@@ -31,6 +31,7 @@ FIELD_LABELS = {
     "access_level": "Уровень доступа",
     "source": "Источник",
     "source_name": "Источник",
+    "is_current": "Текущая",
     "observations_count": "Количество наблюдений",
     "datasets_count": "Наборов данных",
     "versions_count": "Версий",
@@ -148,6 +149,38 @@ TABLE_COLUMNS = {
         "status",
         "count",
     ],
+    "versions": [
+        "version_number",
+        "is_current",
+        "status",
+        "access_level",
+        "source",
+        "observations_count",
+        "files_count",
+        "created_at",
+        "published_at",
+        "change_note",
+    ],
+}
+HIDDEN_TABLE_COLUMNS = {
+    "dataset_id",
+    "category_id",
+    "current_version_id",
+    "version_id",
+    "metadata_id",
+    "license_id",
+    "file_id",
+    "format_id",
+    "uploaded_by",
+    "validation_id",
+    "error_id",
+    "export_id",
+    "user_id",
+    "source_file_id",
+    "region_id",
+    "agro_object_id",
+    "indicator_id",
+    "measurement_unit_id",
 }
 VALUE_LABELS = {
     "status": {
@@ -180,6 +213,14 @@ VALUE_LABELS = {
         "observations": "наблюдения",
         "metadata": "метаданные",
     },
+    "is_current": {
+        True: "да",
+        False: "нет",
+    },
+    "is_primary": {
+        True: "да",
+        False: "нет",
+    },
 }
 
 
@@ -195,7 +236,7 @@ st.markdown(
     }
 
     .block-container {
-        padding-top: 1.4rem;
+        padding-top: 3rem;
         padding-bottom: 2.5rem;
     }
 
@@ -204,6 +245,7 @@ st.markdown(
         font-weight: 720;
         margin: 0 0 0.2rem 0;
         letter-spacing: 0;
+        line-height: 1.25;
     }
 
     .repo-page-caption {
@@ -319,7 +361,7 @@ def format_datetime(value: Any) -> str:
 
 
 def format_value(key: str, value: Any) -> Any:
-    if isinstance(value, str) and key in VALUE_LABELS:
+    if key in VALUE_LABELS:
         return VALUE_LABELS[key].get(value, value)
     return value
 
@@ -358,6 +400,9 @@ def format_table(rows: list[dict[str, Any]], table_name: str | None = None) -> p
             dataframe[column] = dataframe[column].map(format_datetime)
         elif column in VALUE_LABELS:
             dataframe[column] = dataframe[column].map(lambda item, key=column: format_value(key, item))
+    hidden_columns = [column for column in HIDDEN_TABLE_COLUMNS if column in dataframe.columns]
+    if hidden_columns:
+        dataframe = dataframe.drop(columns=hidden_columns)
     if table_name in TABLE_COLUMNS:
         columns = [column for column in TABLE_COLUMNS[table_name] if column in dataframe.columns]
         dataframe = dataframe[columns]
@@ -424,7 +469,7 @@ def display_validation_result(validation: dict[str, Any], title: str = "Резу
     errors = validation.get("errors") or []
     if errors:
         st.write("Ошибки проверки")
-        st.dataframe(format_table(errors), use_container_width=True)
+        st.dataframe(format_table(errors), use_container_width=True, hide_index=True)
 
 
 def dashboard_page():
@@ -449,13 +494,16 @@ def dashboard_page():
     left, right = st.columns(2)
     with left:
         section_title("Версии по статусам")
-        st.dataframe(format_table(stats.get("versions_by_status", []), "status_counts"), use_container_width=True)
+        st.dataframe(format_table(stats.get("versions_by_status", []), "status_counts"), use_container_width=True, hide_index=True)
     with right:
         section_title("Последние наборы")
-        st.dataframe(format_table(datasets[:5], "catalog"), use_container_width=True)
+        st.dataframe(format_table(datasets[:5], "catalog"), use_container_width=True, hide_index=True)
 
     section_title("Последние экспорты")
-    st.dataframe(format_table(exports[:5], "exports"), use_container_width=True)
+    if exports:
+        st.dataframe(format_table(exports[:5], "exports"), use_container_width=True, hide_index=True)
+    else:
+        st.info("Экспортов пока не было.")
 
 
 def chart_from_rows(rows: list[dict[str, Any]], label_key: str, value_key: str, title: str) -> None:
@@ -576,7 +624,7 @@ def catalog_page(refs: dict[str, Any]):
         indicator_id=indicator_id,
     )
     st.caption(f"Найдено наборов: {len(datasets)}")
-    st.dataframe(format_table(datasets, "catalog"), use_container_width=True)
+    st.dataframe(format_table(datasets, "catalog"), use_container_width=True, hide_index=True)
 
     if datasets:
         dataset_map = make_options(datasets, "title", "dataset_id")
@@ -749,6 +797,7 @@ def dataset_card_page():
     summary2.metric("Наблюдений", detail["observations_count"])
     summary3.metric("Файлов", len(detail.get("files", [])))
     current_version = detail.get("current_version")
+    versions = detail.get("versions", [])
     summary4.metric("Текущая версия", current_version.get("version_number") if current_version else "-")
 
     general_tab, version_tab, files_tab, observations_tab = st.tabs(
@@ -781,6 +830,37 @@ def dataset_card_page():
                 {"Параметр": "Комментарий изменений", "Значение": current_version.get("change_note") or "-"},
             ]
             st.dataframe(pd.DataFrame(version_rows), use_container_width=True, hide_index=True)
+
+        if versions:
+            section_title("Все версии набора")
+            st.dataframe(format_table(versions, "versions"), use_container_width=True, hide_index=True)
+            version_options = {
+                (
+                    f"Версия {item.get('version_number') or '-'}"
+                    f" - {item.get('observations_count', 0)} наблюдений"
+                    f"{' - текущая' if item.get('is_current') else ''}"
+                ): item["version_id"]
+                for item in versions
+            }
+            selected_version_label = st.selectbox(
+                "Версия для переключения",
+                list(version_options),
+                key=f"version_switch_select_{dataset_id}",
+            )
+            selected_version_id = version_options[selected_version_label]
+            selected_version = next(item for item in versions if item["version_id"] == selected_version_id)
+            if st.button(
+                "Сделать выбранную версию текущей",
+                key=f"make_current_version_{dataset_id}",
+                disabled=bool(selected_version.get("is_current")),
+                help="Переключает карточку набора, файлы, наблюдения и экспорт на выбранную сохраненную версию.",
+            ):
+                try:
+                    result = api_post(f"/versions/{selected_version_id}/make-current")
+                    st.success(f"Текущая версия изменена на {result['version_number']}.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Не удалось переключить версию: {exc}")
 
         section_title("Метаданные")
         metadata = detail.get("metadata")
@@ -847,7 +927,7 @@ def dataset_card_page():
                 st.info("В текущей версии пока нет импортированных наблюдений.")
             else:
                 section_title("Первые строки аналитического слоя")
-                st.dataframe(format_table(rows[:20], "observations"), use_container_width=True)
+                st.dataframe(format_table(rows[:20], "observations"), use_container_width=True, hide_index=True)
 
 
 def observations_page(refs: dict[str, Any]):
@@ -881,7 +961,7 @@ def observations_page(refs: dict[str, Any]):
         period_year=period_year if use_year else None,
     )
     st.caption(f"Найдено наблюдений: {len(rows)}")
-    st.dataframe(format_table(rows, "observations"), use_container_width=True)
+    st.dataframe(format_table(rows, "observations"), use_container_width=True, hide_index=True)
 
 
 def exports_page():
@@ -894,7 +974,7 @@ def exports_page():
         st.info("Экспортов пока не было. Скачайте исходный файл или экспортируйте наблюдения из карточки набора.")
         return
 
-    st.dataframe(format_table(exports, "exports"), use_container_width=True)
+    st.dataframe(format_table(exports, "exports"), use_container_width=True, hide_index=True)
 
 
 if "user" not in st.session_state:

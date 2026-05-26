@@ -74,7 +74,7 @@ Frontend реализован на Streamlit. Пользовательский �
 |---|---|---|
 | `db` | PostgreSQL 16 Alpine | `5432` |
 | `backend` | FastAPI-приложение | `8000` |
-| `frontend` | Streamlit UI | `8501` |
+| `frontend` | Streamlit UI | `8502` на хосте, `8501` внутри контейнера |
 
 Для PostgreSQL используется volume `postgres_data`. Для файлового хранилища используется bind mount `./storage:/app/storage`.
 

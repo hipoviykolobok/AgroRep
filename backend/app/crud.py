@@ -66,6 +66,22 @@ def create_version(db: Session, dataset_id: int, payload: schemas.VersionCreate)
     return version
 
 
+def set_current_version(db: Session, version_id: int) -> models.DatasetVersion | None:
+    version = get_by_id(db, models.DatasetVersion, "version_id", version_id)
+    if not version:
+        return None
+
+    dataset_versions = db.scalars(
+        select(models.DatasetVersion).where(models.DatasetVersion.dataset_id == version.dataset_id)
+    ).all()
+    for dataset_version in dataset_versions:
+        dataset_version.is_current = dataset_version.version_id == version_id
+
+    db.commit()
+    db.refresh(version)
+    return version
+
+
 def upsert_metadata(db: Session, version_id: int, payload: schemas.MetadataUpsert) -> models.DatasetMetadata | None:
     version = get_by_id(db, models.DatasetVersion, "version_id", version_id)
     if not version:
@@ -402,6 +418,22 @@ def get_dataset_detail(db: Session, dataset_id: int) -> schemas.DatasetDetail | 
 
     version = current_version(dataset)
     metadata = version.metadata_record if version else None
+    versions = [
+        {
+            "version_id": item.version_id,
+            "version_number": item.version_number,
+            "status": item.status.status_name if item.status else None,
+            "access_level": item.access_level.access_level_name if item.access_level else None,
+            "source": item.source.source_name if item.source else None,
+            "is_current": item.is_current,
+            "created_at": item.created_at,
+            "published_at": item.published_at,
+            "change_note": item.change_note,
+            "files_count": len(item.files),
+            "observations_count": observation_count(db, item.version_id),
+        }
+        for item in sorted(dataset.versions, key=lambda version_item: version_item.version_id)
+    ]
     files = []
     if version:
         for dataset_file in version.files:
@@ -434,6 +466,7 @@ def get_dataset_detail(db: Session, dataset_id: int) -> schemas.DatasetDetail | 
         created_by=dataset.created_by,
         created_at=dataset.created_at,
         updated_at=dataset.updated_at,
+        versions=versions,
         current_version={
             "version_id": version.version_id,
             "version_number": version.version_number,

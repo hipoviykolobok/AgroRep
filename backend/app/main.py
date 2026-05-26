@@ -122,6 +122,14 @@ def create_version(dataset_id: int, payload: schemas.VersionCreate, db: Session 
     return version
 
 
+@app.post("/versions/{version_id}/make-current", response_model=schemas.VersionRead)
+def make_version_current(version_id: int, db: Session = Depends(get_db)) -> models.DatasetVersion:
+    version = crud.set_current_version(db, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Версия не найдена.")
+    return version
+
+
 @app.post("/versions/{version_id}/metadata", response_model=schemas.MetadataRead)
 def upsert_metadata(
     version_id: int,

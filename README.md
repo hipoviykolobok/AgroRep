@@ -23,7 +23,7 @@ docker compose up --build
 После запуска:
 
 - FastAPI Swagger UI: http://localhost:8000/docs
-- Streamlit UI: http://localhost:8501
+- Streamlit UI: http://localhost:8502
 - PostgreSQL: `localhost:5432`
 
 ### Если Docker не скачивает образы
@@ -72,7 +72,7 @@ curl -X POST http://localhost:8000/seed
 
 ## Как загрузить sample CSV
 
-1. Откройте http://localhost:8501.
+1. Откройте http://localhost:8502.
 2. Выполните вход под demo-пользователем.
 3. Создайте набор данных.
 4. Создайте версию набора.
