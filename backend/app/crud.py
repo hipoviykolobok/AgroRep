@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pandas as pd
 from fastapi import UploadFile
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app import models, schemas
@@ -35,6 +35,23 @@ def authenticate_user(db: Session, email: str, password: str) -> models.User | N
     if not verify_password(password, user.password_hash):
         return None
     return user
+
+
+def user_has_role(db: Session, user_id: int | None, role_name: str) -> bool:
+    if not user_id:
+        return False
+    return bool(
+        db.scalar(
+            select(models.User.user_id)
+            .join(models.UserRole, models.UserRole.user_id == models.User.user_id)
+            .join(models.Role, models.Role.role_id == models.UserRole.role_id)
+            .where(
+                models.User.user_id == user_id,
+                models.User.is_active.is_(True),
+                models.Role.role_name == role_name,
+            )
+        )
+    )
 
 
 def create_dataset(db: Session, payload: schemas.DatasetCreate) -> models.Dataset:
@@ -606,6 +623,91 @@ def export_observations_to_csv(db: Session, version_id: int, user_id: int | None
         export_status="success",
     )
     return export_path
+
+
+def delete_dataset_file(db: Session, file_id: int) -> models.DatasetFile | None:
+    dataset_file = get_by_id(db, models.DatasetFile, "file_id", file_id)
+    if not dataset_file:
+        return None
+
+    path = storage_uri_to_path(dataset_file.storage_uri)
+    validation_ids = select(models.ValidationResult.validation_id).where(models.ValidationResult.file_id == file_id)
+    db.execute(delete(models.ValidationError).where(models.ValidationError.validation_id.in_(validation_ids)))
+    db.execute(delete(models.ValidationResult).where(models.ValidationResult.file_id == file_id))
+    db.execute(delete(models.Observation).where(models.Observation.source_file_id == file_id))
+    db.execute(update(models.DataExport).where(models.DataExport.file_id == file_id).values(file_id=None))
+    db.delete(dataset_file)
+    db.commit()
+
+    if path.exists():
+        path.unlink()
+    return dataset_file
+
+
+def _delete_version_files(db: Session, version_id: int) -> list[Path]:
+    files = db.scalars(select(models.DatasetFile).where(models.DatasetFile.version_id == version_id)).all()
+    paths = [storage_uri_to_path(dataset_file.storage_uri) for dataset_file in files]
+    file_ids = [dataset_file.file_id for dataset_file in files]
+    if file_ids:
+        validation_ids = select(models.ValidationResult.validation_id).where(models.ValidationResult.file_id.in_(file_ids))
+        db.execute(delete(models.ValidationError).where(models.ValidationError.validation_id.in_(validation_ids)))
+        db.execute(delete(models.ValidationResult).where(models.ValidationResult.file_id.in_(file_ids)))
+        db.execute(update(models.DataExport).where(models.DataExport.file_id.in_(file_ids)).values(file_id=None))
+        db.execute(delete(models.DatasetFile).where(models.DatasetFile.file_id.in_(file_ids)))
+    return paths
+
+
+def delete_dataset_version(db: Session, version_id: int) -> models.DatasetVersion | None:
+    version = get_by_id(db, models.DatasetVersion, "version_id", version_id)
+    if not version:
+        return None
+
+    dataset_id = version.dataset_id
+    was_current = version.is_current
+    file_paths = _delete_version_files(db, version_id)
+    db.execute(update(models.DataExport).where(models.DataExport.version_id == version_id).values(version_id=None))
+    db.execute(delete(models.Observation).where(models.Observation.version_id == version_id))
+    db.execute(delete(models.DatasetMetadata).where(models.DatasetMetadata.version_id == version_id))
+    db.execute(delete(models.VersionKeyword).where(models.VersionKeyword.version_id == version_id))
+    db.execute(delete(models.DatasetVersion).where(models.DatasetVersion.version_id == version_id))
+
+    if was_current:
+        replacement = db.scalar(
+            select(models.DatasetVersion)
+            .where(models.DatasetVersion.dataset_id == dataset_id)
+            .order_by(models.DatasetVersion.version_id.desc())
+        )
+        if replacement:
+            replacement.is_current = True
+
+    db.commit()
+    for path in file_paths:
+        if path.exists():
+            path.unlink()
+    return version
+
+
+def delete_dataset(db: Session, dataset_id: int) -> models.Dataset | None:
+    dataset = get_by_id(db, models.Dataset, "dataset_id", dataset_id)
+    if not dataset:
+        return None
+
+    version_ids = db.scalars(select(models.DatasetVersion.version_id).where(models.DatasetVersion.dataset_id == dataset_id)).all()
+    file_paths: list[Path] = []
+    for version_id in version_ids:
+        file_paths.extend(_delete_version_files(db, version_id))
+        db.execute(update(models.DataExport).where(models.DataExport.version_id == version_id).values(version_id=None))
+        db.execute(delete(models.Observation).where(models.Observation.version_id == version_id))
+        db.execute(delete(models.DatasetMetadata).where(models.DatasetMetadata.version_id == version_id))
+        db.execute(delete(models.VersionKeyword).where(models.VersionKeyword.version_id == version_id))
+    db.execute(delete(models.DatasetVersion).where(models.DatasetVersion.dataset_id == dataset_id))
+    db.execute(delete(models.Dataset).where(models.Dataset.dataset_id == dataset_id))
+    db.commit()
+
+    for path in file_paths:
+        if path.exists():
+            path.unlink()
+    return dataset
 
 
 def get_dashboard_stats(db: Session) -> dict[str, Any]:

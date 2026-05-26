@@ -345,6 +345,13 @@ def api_post(path: str, json: dict | None = None, files: dict | None = None, dat
     return response.json()
 
 
+def api_delete(path: str, **params):
+    response = requests.delete(f"{API_URL}{path}", params={k: v for k, v in params.items() if v not in [None, "", 0]})
+    if not response.ok:
+        raise RuntimeError(format_api_error(response))
+    return response.json()
+
+
 def page_header(title: str, caption: str | None = None) -> None:
     st.markdown(f'<div class="repo-page-title">{title}</div>', unsafe_allow_html=True)
     if caption:
@@ -526,6 +533,10 @@ def render_creation_progress() -> None:
     message = st.session_state.pop("creation_flow_message", None)
     if message:
         st.success(message)
+
+
+def is_admin_user() -> bool:
+    return "admin" in st.session_state.get("user", {}).get("roles", [])
 
 
 def display_validation_result(validation: dict[str, Any], title: str = "Результат проверки") -> None:
@@ -1050,6 +1061,7 @@ def dataset_card_page():
     selected = st.selectbox("Набор данных", list(dataset_map), index=list(dataset_map).index(default_label))
     dataset_id = dataset_map[selected]
     detail = api_get(f"/datasets/{dataset_id}")
+    admin_mode = is_admin_user()
 
     st.subheader(detail["title"])
     summary1, summary2, summary3, summary4 = st.columns(4)
@@ -1074,6 +1086,27 @@ def dataset_card_page():
             {"Параметр": "Количество наблюдений", "Значение": detail["observations_count"]},
         ]
         st.dataframe(pd.DataFrame(info_rows), use_container_width=True, hide_index=True)
+
+        if admin_mode:
+            with st.expander("Администрирование набора данных"):
+                st.warning("Удаление набора удалит его версии, файлы, метаданные и наблюдения. Журнал экспортов сохранится без ссылок на удаленные объекты.")
+                confirm_dataset_delete = st.text_input(
+                    "Для удаления набора введите УДАЛИТЬ",
+                    key=f"delete_dataset_confirm_{dataset_id}",
+                )
+                if st.button(
+                    "Удалить набор данных",
+                    key=f"delete_dataset_{dataset_id}",
+                    disabled=confirm_dataset_delete != "УДАЛИТЬ",
+                ):
+                    try:
+                        api_delete(f"/datasets/{dataset_id}", user_id=st.session_state.user["user_id"])
+                        st.session_state.pop("selected_dataset_id", None)
+                        st.session_state.page = "Каталог данных"
+                        st.success("Набор данных удален.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Не удалось удалить набор данных: {exc}")
 
     with version_tab:
         if not current_version:
@@ -1121,6 +1154,38 @@ def dataset_card_page():
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Не удалось переключить версию: {exc}")
+
+            if admin_mode:
+                with st.expander("Удаление версии"):
+                    st.warning("Удаление версии удалит ее файлы, метаданные, проверки и наблюдения. Если удалить текущую версию, текущей станет последняя оставшаяся версия набора.")
+                    delete_version_options = {
+                        (
+                            f"Версия {item.get('version_number') or '-'}"
+                            f"{' - текущая' if item.get('is_current') else ''}"
+                        ): item["version_id"]
+                        for item in versions
+                    }
+                    delete_version_label = st.selectbox(
+                        "Версия для удаления",
+                        list(delete_version_options),
+                        key=f"version_delete_select_{dataset_id}",
+                    )
+                    delete_version_id = delete_version_options[delete_version_label]
+                    confirm_version_delete = st.text_input(
+                        "Для удаления версии введите УДАЛИТЬ ВЕРСИЮ",
+                        key=f"delete_version_confirm_{delete_version_id}",
+                    )
+                    if st.button(
+                        "Удалить выбранную версию",
+                        key=f"delete_version_{delete_version_id}",
+                        disabled=confirm_version_delete != "УДАЛИТЬ ВЕРСИЮ",
+                    ):
+                        try:
+                            api_delete(f"/versions/{delete_version_id}", user_id=st.session_state.user["user_id"])
+                            st.success("Версия удалена.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Не удалось удалить версию: {exc}")
 
         section_title("Метаданные")
         metadata = detail.get("metadata")
@@ -1177,6 +1242,25 @@ def dataset_card_page():
                     st.download_button("Сохранить CSV", response.content, file_name="observations_export.csv")
                 else:
                     st.error(response.text)
+
+            if admin_mode:
+                with st.expander("Удаление файла версии"):
+                    st.warning("Удаление файла удалит связанные проверки и наблюдения, импортированные из этого файла.")
+                    confirm_file_delete = st.text_input(
+                        "Для удаления файла введите УДАЛИТЬ ФАЙЛ",
+                        key=f"delete_file_confirm_{file_id}",
+                    )
+                    if st.button(
+                        "Удалить выбранный файл",
+                        key=f"delete_file_{file_id}",
+                        disabled=confirm_file_delete != "УДАЛИТЬ ФАЙЛ",
+                    ):
+                        try:
+                            api_delete(f"/files/{file_id}", user_id=st.session_state.user["user_id"])
+                            st.success("Файл удален.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Не удалось удалить файл: {exc}")
 
     with observations_tab:
         if not current_version:

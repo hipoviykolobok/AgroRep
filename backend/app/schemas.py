@@ -193,3 +193,8 @@ class ExportRead(OrmModel):
 class SeedResponse(BaseModel):
     status: str
     message: str
+
+
+class DeleteResponse(BaseModel):
+    status: str
+    message: str

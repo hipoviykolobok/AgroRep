@@ -102,3 +102,70 @@ def test_can_switch_current_dataset_version(client):
     assert detail["current_version"]["version_id"] == version_1["version_id"]
     assert {item["version_number"] for item in detail["versions"]} == {"1.0", "2.0"}
     assert [item for item in detail["versions"] if item["is_current"]][0]["version_id"] == version_1["version_id"]
+
+
+def test_admin_can_delete_uploaded_file_and_observations(client, create_version, valid_csv_bytes):
+    created = create_version()
+    version_id = created["version"]["version_id"]
+    upload_response = client.post(
+        f"/versions/{version_id}/files",
+        files={"file": ("valid.csv", valid_csv_bytes, "text/csv")},
+        data={"uploaded_by": str(created["user_id"])},
+    )
+    assert upload_response.status_code == 201
+    file_id = upload_response.json()["file"]["file_id"]
+
+    import_response = client.post(f"/files/{file_id}/import-observations")
+    assert import_response.status_code == 200
+    assert import_response.json()["imported_count"] == 1
+
+    delete_response = client.delete(f"/files/{file_id}", params={"user_id": created["user_id"]})
+    assert delete_response.status_code == 200
+
+    observations_response = client.get(f"/versions/{version_id}/observations")
+    assert observations_response.status_code == 200
+    assert observations_response.json() == []
+    assert client.get(f"/files/{file_id}/download").status_code == 404
+
+
+def test_admin_can_delete_current_version_and_restore_previous_current(client, create_version):
+    created = create_version()
+    dataset_id = created["dataset"]["dataset_id"]
+    first_version_id = created["version"]["version_id"]
+    status_id = reference_id(models.DatasetStatus, "status_name", "draft")
+    access_level_id = reference_id(models.AccessLevel, "access_level_name", "public")
+    source_id = reference_id(models.DataSource, "source_name", "Пользовательская загрузка")
+
+    second_response = client.post(
+        f"/datasets/{dataset_id}/versions",
+        json={
+            "version_number": "2.0",
+            "status_id": status_id,
+            "access_level_id": access_level_id,
+            "source_id": source_id,
+        },
+    )
+    assert second_response.status_code == 201
+    second_version_id = second_response.json()["version_id"]
+
+    delete_response = client.delete(f"/versions/{second_version_id}", params={"user_id": created["user_id"]})
+    assert delete_response.status_code == 200
+
+    detail_response = client.get(f"/datasets/{dataset_id}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["current_version"]["version_id"] == first_version_id
+    assert [item["version_number"] for item in detail["versions"]] == ["1.0"]
+
+
+def test_delete_dataset_requires_admin_and_removes_dataset(client, create_version):
+    created = create_version()
+    dataset_id = created["dataset"]["dataset_id"]
+    regular_user_id = reference_id(models.User, "email", "user@example.com")
+
+    forbidden_response = client.delete(f"/datasets/{dataset_id}", params={"user_id": regular_user_id})
+    assert forbidden_response.status_code == 403
+
+    delete_response = client.delete(f"/datasets/{dataset_id}", params={"user_id": created["user_id"]})
+    assert delete_response.status_code == 200
+    assert client.get(f"/datasets/{dataset_id}").status_code == 404

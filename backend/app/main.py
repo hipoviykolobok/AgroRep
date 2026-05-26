@@ -185,6 +185,50 @@ def get_dataset(dataset_id: int, db: Session = Depends(get_db)) -> schemas.Datas
     return dataset
 
 
+def _require_admin(user_id: int | None, db: Session) -> None:
+    if not crud.user_has_role(db, user_id, "admin"):
+        raise HTTPException(status_code=403, detail="Операция доступна только администратору.")
+
+
+@app.delete("/datasets/{dataset_id}", response_model=schemas.DeleteResponse)
+def delete_dataset(
+    dataset_id: int,
+    user_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> schemas.DeleteResponse:
+    _require_admin(user_id, db)
+    deleted = crud.delete_dataset(db, dataset_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Набор данных не найден.")
+    return schemas.DeleteResponse(status="ok", message="Набор данных удален.")
+
+
+@app.delete("/versions/{version_id}", response_model=schemas.DeleteResponse)
+def delete_version(
+    version_id: int,
+    user_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> schemas.DeleteResponse:
+    _require_admin(user_id, db)
+    deleted = crud.delete_dataset_version(db, version_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Версия не найдена.")
+    return schemas.DeleteResponse(status="ok", message="Версия удалена.")
+
+
+@app.delete("/files/{file_id}", response_model=schemas.DeleteResponse)
+def delete_file(
+    file_id: int,
+    user_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> schemas.DeleteResponse:
+    _require_admin(user_id, db)
+    deleted = crud.delete_dataset_file(db, file_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Файл не найден.")
+    return schemas.DeleteResponse(status="ok", message="Файл удален.")
+
+
 @app.get("/versions/{version_id}/observations")
 def get_observations(
     version_id: int,
