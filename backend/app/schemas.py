@@ -122,6 +122,8 @@ class DatasetFileRead(OrmModel):
 class FileUploadResponse(BaseModel):
     file: DatasetFileRead
     validation: ValidationResultRead
+    duplicate_file_ids: list[int] = Field(default_factory=list)
+    duplicate_message: str | None = None
 
 
 class ObservationRead(OrmModel):

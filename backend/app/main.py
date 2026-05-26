@@ -157,10 +157,16 @@ async def upload_dataset_file(
     result = await crud.save_and_validate_file(db, version_id, uploaded_by, file, is_primary)
     if not result:
         raise HTTPException(status_code=404, detail="Версия не найдена.")
-    dataset_file, validation = result
+    dataset_file, validation, duplicate_file_ids = result
     return schemas.FileUploadResponse(
         file=schemas.DatasetFileRead.model_validate(dataset_file),
         validation=schemas.ValidationResultRead.model_validate(validation),
+        duplicate_file_ids=duplicate_file_ids,
+        duplicate_message=(
+            f"Такой файл уже был загружен в эту версию: найдено совпадений по содержимому — {len(duplicate_file_ids)}."
+            if duplicate_file_ids
+            else None
+        ),
     )
 
 

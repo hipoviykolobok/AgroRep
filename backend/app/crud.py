@@ -169,12 +169,20 @@ async def save_and_validate_file(
     uploaded_by: int | None,
     upload_file: UploadFile,
     is_primary: bool = True,
-) -> tuple[models.DatasetFile, models.ValidationResult] | None:
+) -> tuple[models.DatasetFile, models.ValidationResult, list[int]] | None:
     version = get_by_id(db, models.DatasetVersion, "version_id", version_id)
     if not version:
         return None
 
     original_name, storage_uri, full_path, file_size, checksum = await save_upload_file(upload_file)
+    duplicate_file_ids = db.scalars(
+        select(models.DatasetFile.file_id)
+        .where(
+            models.DatasetFile.version_id == version_id,
+            models.DatasetFile.checksum == checksum,
+        )
+        .order_by(models.DatasetFile.file_id)
+    ).all()
     format_name = infer_format_name(original_name)
     data_format = None
     if format_name:
@@ -210,7 +218,7 @@ async def save_and_validate_file(
     db.commit()
     db.refresh(dataset_file)
     db.refresh(validation)
-    return dataset_file, validation
+    return dataset_file, validation, list(duplicate_file_ids)
 
 
 def _lookup_map(db: Session, model: type, name_column: str):
@@ -258,7 +266,13 @@ def import_observations_from_file(db: Session, file_id: int) -> tuple[int, int, 
     indicators = _lookup_map(db, models.Indicator, "indicator_name")
     units = _lookup_map(db, models.MeasurementUnit, "unit_symbol")
 
-    db.execute(delete(models.Observation).where(models.Observation.source_file_id == file_id))
+    duplicate_file_ids = db.scalars(
+        select(models.DatasetFile.file_id).where(
+            models.DatasetFile.version_id == dataset_file.version_id,
+            models.DatasetFile.checksum == dataset_file.checksum,
+        )
+    ).all()
+    db.execute(delete(models.Observation).where(models.Observation.source_file_id.in_(duplicate_file_ids)))
 
     errors: list[FileValidationErrorItem] = []
     observations: list[models.Observation] = []
@@ -314,13 +328,19 @@ def import_observations_from_file(db: Session, file_id: int) -> tuple[int, int, 
         db.add(observation)
 
     status = "success" if not errors else "failed"
+    duplicate_count = max(len(duplicate_file_ids) - 1, 0)
+    success_message = "Наблюдения импортированы."
+    if duplicate_count:
+        success_message = (
+            f"Наблюдения импортированы. Данные из {duplicate_count} ранее загруженного дублирующего файла заменены."
+        )
     validation = _create_validation_result(
         db,
         version_id=dataset_file.version_id,
         file_id=file_id,
         status=status,
         rows_checked=len(df.index),
-        message="Наблюдения импортированы." if status == "success" else "Импорт выполнен частично: есть ошибки справочников.",
+        message=success_message if status == "success" else "Импорт выполнен частично: есть ошибки справочников.",
         errors=errors,
     )
     if status == "failed":
@@ -453,12 +473,19 @@ def get_dataset_detail(db: Session, dataset_id: int) -> schemas.DatasetDetail | 
     ]
     files = []
     if version:
-        for dataset_file in version.files:
+        name_counts: dict[str, int] = {}
+        for dataset_file in sorted(version.files, key=lambda item: item.file_id):
             latest_validation = _find_latest_validation(db, dataset_file.file_id)
+            name_counts[dataset_file.file_name] = name_counts.get(dataset_file.file_name, 0) + 1
+            display_file_name = dataset_file.file_name
+            if name_counts[dataset_file.file_name] > 1:
+                stem, suffix = Path(dataset_file.file_name).stem, Path(dataset_file.file_name).suffix
+                display_file_name = f"{stem} ({name_counts[dataset_file.file_name]}){suffix}"
             files.append(
                 {
                     "file_id": dataset_file.file_id,
                     "file_name": dataset_file.file_name,
+                    "display_file_name": display_file_name,
                     "format": dataset_file.format.format_name if dataset_file.format else None,
                     "file_size": dataset_file.file_size,
                     "checksum": dataset_file.checksum,

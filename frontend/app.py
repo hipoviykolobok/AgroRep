@@ -54,6 +54,7 @@ FIELD_LABELS = {
     "citation": "Цитирование",
     "file_id": "ID файла",
     "file_name": "Имя файла",
+    "display_file_name": "Имя файла",
     "format": "Формат",
     "format_id": "ID формата",
     "file_size": "Размер файла",
@@ -127,7 +128,7 @@ TABLE_COLUMNS = {
         "created_at",
     ],
     "files": [
-        "file_name",
+        "display_file_name",
         "format",
         "file_size_readable",
         "uploaded_at",
@@ -859,6 +860,8 @@ def create_dataset_page(refs: dict[str, Any]):
                 result = api_post(f"/versions/{version_id}/files", files=files, data=data)
                 st.session_state.creation_file_id = result["file"]["file_id"]
                 st.session_state.last_uploaded_file_id = result["file"]["file_id"]
+                if result.get("duplicate_message"):
+                    st.warning(result["duplicate_message"])
                 display_validation_result(result["validation"], "Проверка загруженного файла")
                 advance_creation_flow(4, "Файл загружен и проверен.")
             except Exception as exc:
@@ -1022,6 +1025,8 @@ def upload_page():
             st.session_state.last_uploaded_file_id = result["file"]["file_id"]
             st.session_state.creation_version_id = version_id
             st.session_state.creation_file_id = result["file"]["file_id"]
+            if result.get("duplicate_message"):
+                st.warning(result["duplicate_message"])
             display_validation_result(result["validation"], "Проверка загруженного файла")
             st.info("Теперь можно импортировать наблюдения из загруженного файла.")
         except Exception as exc:
@@ -1206,7 +1211,7 @@ def dataset_card_page():
         else:
             section_title("Файлы версии")
             st.dataframe(format_table(files, "files"), use_container_width=True, hide_index=True)
-            file_map = make_options(files, "file_name", "file_id")
+            file_map = make_options(files, "display_file_name", "file_id")
             selected_file = st.selectbox("Файл для скачивания", list(file_map))
             file_id = file_map[selected_file]
             selected_file_record = next(item for item in files if item["file_id"] == file_id)
