@@ -496,6 +496,7 @@ def option_index_by_value(options: dict[str, int], value: int | None) -> int:
 
 
 def go_to_page(page: str, **state: Any) -> None:
+    st.session_state.pop("next_action", None)
     for key, value in state.items():
         st.session_state[key] = value
     st.session_state.page = page
@@ -503,7 +504,22 @@ def go_to_page(page: str, **state: Any) -> None:
 
 
 def next_page_button(label: str, page: str, key: str, **state: Any) -> None:
-    if st.button(label, key=key):
+    st.session_state.next_action = {
+        "label": label,
+        "page": page,
+        "state": state,
+    }
+
+
+def render_next_action(key: str) -> None:
+    action = st.session_state.get("next_action")
+    if not action:
+        return
+
+    st.info("Доступен следующий шаг сценария.")
+    if st.button(action["label"], key=key):
+        page = action["page"]
+        state = action.get("state", {})
         go_to_page(page, **state)
 
 
@@ -953,6 +969,8 @@ def create_version_page(refs: dict[str, Any]):
         except Exception as exc:
             st.error(f"Не удалось создать версию: {exc}")
 
+    render_next_action("create_version_next_action")
+
 
 def metadata_page(refs: dict[str, Any]):
     page_header(
@@ -999,6 +1017,8 @@ def metadata_page(refs: dict[str, Any]):
             )
         except Exception as exc:
             st.error(f"Не удалось сохранить метаданные: {exc}")
+
+    render_next_action("metadata_next_action")
 
 
 def upload_page():
@@ -1049,6 +1069,8 @@ def upload_page():
                 )
         except Exception as exc:
             st.error(f"Не удалось импортировать наблюдения: {exc}")
+
+    render_next_action("upload_next_action")
 
 
 def dataset_card_page():
